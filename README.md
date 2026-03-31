@@ -1,2 +1,2 @@
 # Geometry-Regularized-Brain-Embeddings
-# Implementing Geometry-Regularized Brain Embeddings for CLIP-Style Neural-to-Image Retrieval
+# A Framework for Brain Signal-to-Image Retrieval Alignment Combining Frequency-Domain Priors and Adaptivity
