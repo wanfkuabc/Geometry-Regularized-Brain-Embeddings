@@ -2,6 +2,13 @@
 
 本仓库实现了一个面向 **THINGS-EEG** 与 **THINGS-MEG** 的脑信号—图像检索框架。模型以冻结的 CLIP 图像表征为视觉目标，通过注视式模糊先验、脑信号投影、批内标准化、CCA 风格相关性约束、频域幅相调制和可靠度自适应对比学习，将 EEG/MEG 表征对齐到视觉表征空间。
 
+## 模型框架
+
+<p align="center">
+  <img src="assets/model_overview.pdf" alt="GRBE 模型整体流程" width="90%">
+</p>
+
+
 ## 目录
 
 - [环境配置](#环境配置)
@@ -180,17 +187,6 @@ exp/
 tensorboard --logdir exp
 ```
 
-## 模型流程
-
-当前实现与 UBP 的整体设计保持一致：
-
-```text
-图像 → 注视式模糊 → 冻结 CLIP 图像特征 → 图像 Adapter ┐
-                                                     ├→ CCA 相关性约束 → 自适应对比学习 → 检索
-EEG/MEG → 脑编码器/投影 → 批内标准化 → EEG Adapter ────┘
-                  │
-                  └→ FFT 幅值/相位统计 → FiLM 调制与可靠度估计 → 样本自适应温度
-```
 
 ## 致谢
 
