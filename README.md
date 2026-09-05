@@ -1,4 +1,4 @@
-# GRBE：面向 EEG/MEG 视觉检索的跨模态对齐
+# Stabilizing Neural-to-Image Retrieval with Frequency-Domain Priors and Adaptive Supervision：面向 EEG/MEG 视觉检索的跨模态对齐
 
 本仓库实现了一个面向 **THINGS-EEG** 与 **THINGS-MEG** 的脑信号—图像检索框架。模型以冻结的 CLIP 图像表征为视觉目标，通过注视式模糊先验、脑信号投影、批内标准化、CCA 风格相关性约束、频域幅相调制和可靠度自适应对比学习，将 EEG/MEG 表征对齐到视觉表征空间。
 
@@ -17,7 +17,7 @@
 
 ## 环境配置
 
-推荐使用与 UBP 实现一致的 Linux/CUDA 环境：Python 3.8.19、CUDA 12.0、PyTorch 2.4.1。
+推荐使用 Linux/CUDA 环境：Python 3.8.19、CUDA 12.0、PyTorch 2.4.1。
 
 ```bash
 conda create -n grbe python=3.8.19 -y
