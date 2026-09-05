@@ -190,7 +190,7 @@ tensorboard --logdir exp
 
 ## 致谢
 
-本项目的数据组织、实验框架和不确定性感知模糊先验的总体思路参考并感谢 [Uncertainty-aware Blur Prior (UBP)](https://github.com/HaitaoWuTJU/Uncertainty-aware-Blur-Prior) 项目及其论文：
+本项目的数据组织、实验框架参考并感谢 [Uncertainty-aware Blur Prior (UBP)](https://github.com/HaitaoWuTJU/Uncertainty-aware-Blur-Prior) 项目及其论文：
 
 > Wu, H., Li, Q., Zhang, C., He, Z., & Ying, X. (2025). *Bridging the Vision-Brain Gap with an Uncertainty-Aware Blur Prior*. CVPR 2025.
 
