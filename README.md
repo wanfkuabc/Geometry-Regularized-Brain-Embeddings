@@ -5,7 +5,7 @@
 ## 模型框架
 
 <p align="center">
-  <img src="assets/arcchitecture1.pdf" alt="GRBE 模型整体流程" width="90%">
+  <img src="assets/architecture1.jpg" alt="GRBE 模型整体流程" width="90%">
 </p>
 
 
