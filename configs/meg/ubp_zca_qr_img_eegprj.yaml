@@ -1,0 +1,175 @@
+timesteps: [0,201]
+dataset: meg
+blur_kernel_size: 51
+system_g: 3
+
+name: "${dataset}_${exp_setting}_ubp_${brain_backbone}_${vision_backbone}"
+
+models:
+  brain:
+    target: "base.eeg_backbone.${brain_backbone}"
+    params:
+        c_num: 271
+        z_dim: ${z_dim}
+        timesteps: ${timesteps}
+model:
+  img_adapter_on: true
+  img_adapter_type: linear
+  img_adapter_hidden: 1024
+  img_adapter_dropout: 0.1
+  img_adapter_residual: true
+  bt_weight: 0.0          # 0 就关闭 Barlow
+  bt_lambda: 0.005
+  bt_dim: 256
+  bt_eps: 1e-9
+  bt_on: fused             # fused or brain
+  bt_use_projector: False
+  energy_bands: [[1,4],[4,8],[8,13],[13,30],[30,80]]
+  energy_eps: 1e-6
+  energy_dropout: 0.0
+  lambda_txt: 0.05
+  txt_multi_positive: true   # ✅ 强烈建议 true
+  lambda_proto: 0.2
+  proto_mode: "ce"     # 推荐先用 ce（更强）
+  proto_temp: 0.07
+  proto_detach: true
+  # 统计域对齐 baseline
+  align_on: true
+  align_method: "bws"   # recenter | bws | zca | coral | adain
+  align_to: "img"       # img | txt (仅 coral/adain 需要)
+  align_target_use_raw: true
+  align_eps: 1e-5
+  align_shrink: 0.05
+  align_detach_target: true
+  align_detach_source_stats: false
+  align_group_size: 0   # 0=full-cov; 64/128=group whitening
+  whiten_on: true
+  whiten_where: "eeg"     # 直接作用在 eeg_z
+  whiten_mode: "bn"       # 先用 bn，最稳
+  whiten_eps: 1e-5
+  whiten_detach_stats: false
+  whiten_shrink: 0.05
+
+  whiten_reduce_dim: 0
+
+  use_post_whiten_proj: false
+  post_proj_type: linear
+  post_proj_dim: 1024
+  post_proj_hidden_dim: 2048
+  post_proj_dropout: 0.01
+  post_proj_residual: True
+  post_proj_scale: 0.1
+  proj_feat_l2_weight: 1e-4
+  proj_weight_l2_weight: 0.0
+  rep_weight: 0.05 # 0.1
+  rep_num_points: 16
+  rep_dim: 128
+  rep_tau: 0.07
+  proc_weight: 0.0 # 0.01      # 先很小
+  proc_dim: 256
+  proc_use_ln: false
+  proc_detach_img: true
+  txt_head:
+      hidden: 1024
+      dropout: 0.0
+      residual: true
+      detach_backbone: false   # 想让 txt 不干扰 brain 就设 true
+  txt_eps: 1e-8
+  mean_cons_weight: 0.05
+  mean_cons_detach_mean: true
+  mean_cons_type: cosine   # 或 mse
+  freq_prior:
+      enable: true
+      fs: 250
+      mode: bank           # bank | sinc
+      out: mix             # mix | time_concat | channel_concat
+      include_raw: true
+      kernel_size: 129
+      window: hamming
+      bands_hz: [[1,4],[4,8],[8,13],[13,30],[30,45]]
+      learnable_bank: false
+  eeg_aug:
+      weak_noise_std: 0.00
+      weak_chan_drop: 0.05
+      weak_time_mask: 0.05
+      weak_max_shift: 4
+      weak_amp_scale: 0.05
+
+      strong_noise_std: 0.0
+      strong_chan_drop: 0.15
+      strong_time_mask: 0.15
+      strong_max_shift: 12
+      strong_amp_scale: 0.15
+
+      freq_mask_on: true
+      weak_freq_mask_ratio: 0.00
+      strong_freq_mask_ratio: 0.08
+      sfreq: 250               # 强烈建议填（EEG 常见 250/200/1000）
+      noise_std: 0.0 # 0.005
+      noise_prob: 1.0
+      time_mask: 0.1
+      mask_mode: learnable        # 关键：启用 learnable 填充
+      mask_token_scale: 1.0       # token * std 的系数
+      mask_token_reg: 1e-4        # 可选：很小的正则，防止 token 漂太大
+      amp_prob: 0.5
+      amp_range: [0.9, 1.1]
+      chan_drop: 0.1
+      jitter_prob: 0.5
+      jitter_ms: [10, 30]
+      shift_pad: mean          # mean/noise/zero/wrap
+      shift_noise_scale: 0.01
+      time_mask_mode: learnable_noise      # zero | mean | noise | learnable | mean_noise | learnable_noise
+      time_mask_noise_std: 0.01
+      time_mask_per_sample: true
+      max_shift: 10
+      shift_mode: non_circular        # circular | non_circular
+      shift_pad_mode: mean            # zero | mean | noise | learnable | mean_noise | learnable_noise
+      shift_noise_std: 0.01
+
+      learnable_mix_init: 0.0         # sigmoid后≈0.5；你也可以设 -2.0(更偏向均值) 或 +2.0(更偏向token)
+
+      band_prob: 0.5
+      band_fmin: 2.0
+      band_fmax: 40.0
+      band_width_hz: [2.0, 6.0]
+      band_atten: 0.0          # 0=强 stop；0.2=弱 stop
+      band_mode: stop
+
+      cluster_drop_prob: 0.2
+      cluster_drop_n: 1
+      cluster_block_size: 8    # 没 clusters 时 fallback 用连续块
+      cluster_drop_mode: mean  # zero/mean/noise
+      mask_noise_scale: 0.01
+
+      mixup_prob: 0.2
+      mixup_alpha: 0.2
+      mixup_same_label: true
+      mixup_keep_major: true
+
+data:
+  data_dir: data/things-meg/things-meg/Preprocessed_data
+  selected_ch: False
+  model_type: ${vision_backbone}
+  train_batch_size: 1024
+  val_batch_size: 200
+  test_batch_size: 200
+  uncertainty_aware: True
+  blur_type:
+    target: base.inpating_data.FoveaBlur
+    params:
+          h: 224
+          w: 224
+          blur_kernel_size: ${blur_kernel_size}
+          curve_type: exp
+          system_g:  ${system_g}
+
+  train_avg: True
+  test_avg: True
+  timesteps: ${timesteps}
+
+train:
+  epoch: ${epoch}
+  optimizer: AdamW
+  lr: ${lr}
+  
+save_dir: 'exp'

@@ -1,0 +1,335 @@
+import torch,os
+from torch.utils.data import Dataset, DataLoader
+import numpy as np
+from PIL import Image
+import logging
+import open_clip
+import gc
+from tqdm import tqdm
+import itertools
+
+from torch.utils.data import DataLoader, random_split
+from torchvision import transforms
+from base.utils import instantiate_from_config, get_device 
+from transformers import BlipProcessor, BlipForConditionalGeneration
+
+def load_meg_data(config):
+    exp_setting = config.get('exp_setting', 'intra-subject')
+    
+    if exp_setting == 'intra-subject':
+        test_dataset = MEGDataset(config,mode='test')
+        print('init test_dataset success')
+        train_dataset = MEGDataset(config,mode='train')
+        print('init train_dataset success')
+        test_loader = DataLoader(test_dataset, batch_size=config['data']['test_batch_size'], shuffle=False, drop_last=False,num_workers=25, pin_memory=True)
+        train_loader = DataLoader(train_dataset, batch_size=config['data']['train_batch_size'], shuffle=True, drop_last=False, num_workers=32, pin_memory=True)
+        return train_loader, test_loader,test_loader
+    
+    elif exp_setting == 'inter-subject':
+        subjects = config['data']['subjects']
+        test_dataset = MEGDataset(config,mode='test')
+        print('init test_dataset success')
+        
+        all_subjects = [f'sub-{i:02}' for i in range(1, 5)]
+        leave_one_subjects = list(set(all_subjects) - set(subjects))
+        leave_one_subjects_config = config
+        leave_one_subjects_config['data']['subjects'] = leave_one_subjects
+        val_dataset = MEGDataset(leave_one_subjects_config,mode='test')
+        print('init val_dataset success')
+        train_dataset = MEGDataset(leave_one_subjects_config,mode='train')
+        print('init train_dataset success')
+        test_loader = DataLoader(test_dataset, batch_size=config['data']['test_batch_size'], shuffle=False, drop_last=False,num_workers=25)#, pin_memory=True)
+        val_loader = DataLoader(val_dataset, batch_size=config['data']['val_batch_size'], shuffle=False, drop_last=False,num_workers=32)#, pin_memory=True)
+        train_loader = DataLoader(train_dataset, batch_size=config['data']['train_batch_size'], shuffle=True, drop_last=False, num_workers=32)#, pin_memory=True)
+        return train_loader, val_loader, test_loader
+    
+class MEGDataset(Dataset):
+    def __init__(self, config, mode):
+        self.config= config
+        self.data_dir = config['data']['data_dir']
+        # self.img_directory = os.path.join(self.data_dir,'../','Image_set_Resize',f'{mode}_images')
+        # self.all_class_names = [d.split('_',1)[-1] for d in os.listdir(self.img_directory) if os.path.isdir(os.path.join(self.img_directory, d))]
+        # self.all_class_names.sort()
+        self.subjects = config['data']['subjects']
+        print(f'subjects:{self.subjects}')
+        self.mode = mode
+        self.name = config['name']
+        self.model_type = config['data']['model_type']
+        self.selected_ch = config['data']['selected_ch']
+        self.channels = None
+        if self.selected_ch == "None":
+            self.selected_ch = self.channels
+    
+        self.avg = config['data'][f"{mode}_avg"]
+
+        self.blur_type = config['data']['blur_type']
+
+        self.timesteps = config['data']['timesteps']
+
+        self.n_cls = 1654 if self.mode=='train' else 200
+        self.per_trials = 1 if self.mode=='train' else 12
+
+        self.data_paths = [os.path.join(self.data_dir,subject,f'{mode}.pt') for subject in self.subjects]
+        self.loaded_data= [self.load_data(data_path) for data_path in self.data_paths]
+        
+        self.trial_subject = self.loaded_data[0]['eeg'].shape[0]
+        self.trial_all_subjects = self.trial_subject*len(self.subjects)
+
+        data_dir = os.path.join(self.data_dir,'../Image_feature',f"{config['data']['blur_type']['target'].rsplit('.',1)[-1]}")
+        os.makedirs(data_dir,exist_ok=True)
+        # features_filename = os.path.join(data_dir,f"{self.name}_{mode}.pt")
+        features_filename = os.path.join(data_dir,f"{self.name}_{mode}_blipcap.pt")
+
+        pretrain_map= {
+                'RN50':{'pretrained':'openai','resize':(224,224)}, #1024 
+                'RN101':{'pretrained':'openai','resize':(224,224)}, #512
+                'ViT-B-16':{'pretrained':'laion2b_s34b_b88k','resize':(224,224)}, #512
+                'ViT-B-32':{'pretrained':'laion2b_s34b_b79k','resize':(224,224)}, #512
+                'ViT-L-14':{'pretrained':'laion2b_s32b_b82k','resize':(224,224)}, #768
+                'ViT-H-14':{'pretrained':'laion2b_s32b_b79k','resize':(224,224)}, #1024
+                'ViT-g-14':{'pretrained':'laion2b_s34b_b88k','resize':(224,224)}, #1024
+                'ViT-bigG-14':{'pretrained':'laion2b_s39b_b160k','resize':(224,224)}, #1280
+            }
+        self.c = config['c']
+        if self.config['data']['uncertainty_aware']:
+            self.blur_transform = {}
+            for shift,tag in zip([-self.c,0,self.c],['low','medium','high']):
+                blur_param = config['data']['blur_type']
+                blur_param['params']['blur_kernel_size'] = blur_param['params']['blur_kernel_size']+shift
+                self.blur_transform[tag] = instantiate_from_config(blur_param)
+        else:
+            self.blur_transform = instantiate_from_config(config['data']['blur_type'])
+        process_term = [transforms.ToTensor(), transforms.Normalize(mean=(0.48145466, 0.4578275, 0.40821073), std=(0.26862954, 0.26130258, 0.27577711))]
+
+        self.process_transform = transforms.Compose(process_term)
+
+        self.match_label = np.ones(self.trial_all_subjects, dtype=int)
+
+        if os.path.exists(features_filename):
+            saved_features = torch.load(features_filename, weights_only=False)
+            self.img_features = saved_features['img_features']
+            self.text_features = saved_features['text_features']
+            self.generated_captions = saved_features.get('generated_captions', None)
+        else:
+            device = get_device('auto')
+            device_str = f"cuda:{device}" if torch.cuda.is_available() else "cpu"
+
+            # 1) open_clip: 负责 image/text embedding
+            self.vlmodel, self.preprocess, _ = open_clip.create_model_and_transforms(
+                self.model_type,
+                device=device_str,
+                pretrained=pretrain_map[self.model_type]['pretrained']
+            )
+            for param in self.vlmodel.parameters():
+                param.requires_grad = False
+            self.vlmodel.eval()
+
+            # 2) BLIP: 负责 image -> caption
+            self.caption_processor = BlipProcessor.from_pretrained("Salesforce/blip-image-captioning-base")
+            self.caption_model = BlipForConditionalGeneration.from_pretrained("Salesforce/blip-image-captioning-base")
+            self.caption_model = self.caption_model.to(device_str)
+            self.caption_model.eval()
+            for param in self.caption_model.parameters():
+                param.requires_grad = False
+
+            # 3) 图像特征
+            if self.config['data']['uncertainty_aware']:
+                self.img_features = {}
+                for tag in ['low', 'medium', 'high']:
+                    self.img_features[tag] = self.ImageEncoder(self.loaded_data[0]['img'], self.blur_transform[tag])
+                self.img_features['avg'] = {
+                    k: (sum(self.img_features[tag][k] for tag in ['low', 'medium', 'high']) / 3)
+                    for k in self.img_features['medium']
+                }
+            else:
+                self.img_features = self.ImageEncoder(self.loaded_data[0]['img'])
+
+            # 4) 先生成 caption，再编码成 text feature
+            self.generated_captions = self.GenerateCaptions(self.loaded_data[0]['img'])
+            self.text_features = self.TextencoderFromCaptions(self.generated_captions)
+
+            torch.save({
+                'img_features': self.img_features,
+                'text_features': self.text_features,
+                'generated_captions': self.generated_captions,
+            }, features_filename)
+
+            del self.caption_model
+            del self.vlmodel
+            torch.cuda.empty_cache()
+            gc.collect()
+    @torch.no_grad()
+    def GenerateCaptions(self, images):
+        """
+        images: 所有样本里的 img_path 列表/数组
+        返回:
+            captions_dict[img_path] = generated caption string
+        """
+        set_images = list(set(images))
+        set_images.sort()
+
+        captions_dict = {}
+        batch_size = 32  # BLIP 比 CLIP 重，batch 不要太大
+
+        device = next(self.caption_model.parameters()).device
+
+        for i in tqdm(range(0, len(set_images), batch_size), desc="Generating captions"):
+            batch_images = set_images[i:i + batch_size]
+
+            pil_images = []
+            for img in batch_images:
+                img_full_path = os.path.join(self.data_dir, '../Image_set_Resize', img)
+                pil_img = Image.open(img_full_path).convert("RGB")
+                pil_images.append(pil_img)
+
+            inputs = self.caption_processor(images=pil_images, return_tensors="pt", padding=True).to(device)
+
+            out = self.caption_model.generate(
+                **inputs,
+                max_new_tokens=20,
+                num_beams=3
+            )
+            captions = self.caption_processor.batch_decode(out, skip_special_tokens=True)
+
+            for img_path, cap in zip(batch_images, captions):
+                captions_dict[img_path] = cap.strip()
+
+        return captions_dict
+    def load_data(self,data_path):
+        logging.info(f"----load {data_path.rsplit('1000HZ',1)[-1]}----")
+        loaded_data = torch.load(data_path, weights_only=False)
+        loaded_data['eeg']=torch.from_numpy(loaded_data['eeg'])
+        print(f"\n[DEBUG] data_path = {data_path}")
+        print("[DEBUG] loaded_data.keys() =", loaded_data.keys())
+        if self.selected_ch:
+            selected_idx = [self.channels.index(ch) for ch in self.selected_ch]
+            loaded_data['eeg'] = loaded_data['eeg'][:,:,selected_idx]
+        if self.avg:
+            avg_data={}
+            avg_data['eeg'] = loaded_data['eeg'].mean(axis=1)
+            # avg_data['label'] = loaded_data['label'][:,0]
+            avg_data['img'] = np.array(loaded_data['img'])#[:,0]
+            # avg_data['text'] = loaded_data['text'][:,0]
+                
+            #avg_data['session'] = loaded_data['session']
+            #avg_data['times'] = loaded_data['times']
+            loaded_data = avg_data
+        else:
+            _data = {}
+            _data['eeg'] = loaded_data['eeg'].reshape(-1,*loaded_data['eeg'].shape[2:])
+            _data['eeg_avg'] = loaded_data['eeg'].mean(axis=1)
+            # _data['label'] = loaded_data['label'].reshape(-1)
+            _data['img'] = loaded_data['img'].reshape(-1)
+            # _data['text'] = loaded_data['text'].reshape(-1)
+            # _data['session'] = loaded_data['session'].reshape(-1)
+            # _data['times'] = loaded_data['times']
+            loaded_data = _data
+        
+        
+        for k,v in loaded_data.items():
+            if k in ['eeg','label','img','text','session']:
+                logging.info(f"{k}: {v.shape}")
+        return loaded_data    
+    
+    @torch.no_grad()
+    def ImageEncoder(self,images,blur_transform=None):
+        if blur_transform == None:
+            blur_transform = self.blur_transform
+        self.vlmodel.eval()
+
+        set_images = list(set(images))
+        set_images.sort()
+        batch_size = 128
+        image_features_list = []
+        for i in tqdm(range(0, len(set_images), batch_size)):
+            batch_images = set_images[i:i + batch_size]
+
+            device = next(self.vlmodel.parameters()).device
+            # print(batch_images[0])
+            ele = [self.process_transform(blur_transform(Image.open(os.path.join(self.data_dir,'../Image_set_Resize',img)).convert("RGB"))) for img in batch_images]
+
+            image_inputs = torch.stack(ele).to(device)
+
+            batch_image_features = self.vlmodel.encode_image(image_inputs)
+            batch_image_features = batch_image_features/batch_image_features.norm(dim=-1, keepdim=True)
+            image_features_list.append(batch_image_features)
+        image_features = torch.cat(image_features_list, dim=0)
+        image_features_dict = {set_images[i]:image_features[i].float().cpu() for i in range(len(set_images))}
+        return image_features_dict
+    
+    @torch.no_grad()
+    def TextencoderFromCaptions(self, captions_dict):
+        """
+        captions_dict: {img_path: caption}
+        返回:
+            text_features_dict[img_path] = CLIP text embedding
+        """
+        img_paths = list(captions_dict.keys())
+        img_paths.sort()
+
+        captions = [captions_dict[p] for p in img_paths]
+
+        # 你也可以加一个 prompt 包装
+        prompts = [f"a photo of {cap}" for cap in captions]
+
+        text_inputs = open_clip.tokenize(prompts)
+        device = next(self.vlmodel.parameters()).device
+        text_inputs = text_inputs.to(device)
+
+        text_features = self.vlmodel.encode_text(text_inputs)
+        text_features = text_features / text_features.norm(dim=-1, keepdim=True)
+
+        text_features_dict = {
+            img_paths[i]: text_features[i].float().cpu()
+            for i in range(len(img_paths))
+        }
+        return text_features_dict
+    
+    def __getitem__(self, index):
+        subject = index // self.trial_subject
+        trial_index = index % self.trial_subject
+
+        eeg = self.loaded_data[subject]['eeg'][trial_index].float()
+        if self.avg:
+            eeg_mean = eeg
+        else:
+            eeg_mean = self.loaded_data[subject]['eeg_avg'][trial_index // self.per_trials].float()
+
+        img_path = self.loaded_data[subject]['img'][trial_index]
+        img = 'None'
+
+        match_label = self.match_label[index]
+
+        if self.config['data']['uncertainty_aware']:
+            if self.mode == 'train':
+                if match_label == 0:
+                    tag = 'low'
+                elif match_label == 2:
+                    tag = 'high'
+                else:
+                    tag = 'medium'
+            else:
+                tag = 'medium'
+            img_features = self.img_features[tag][img_path]
+        else:
+            img_features = self.img_features[img_path]
+
+        text = self.generated_captions[img_path]
+        text_features = self.text_features[img_path]
+
+        sample = {
+            'idx': index,
+            'eeg': eeg[:, self.timesteps[0]:self.timesteps[1]],
+            'img_path': img_path,
+            'img': img,
+            'img_features': img_features,
+            'text': text,
+            'text_features': text_features,
+            'subject': subject,
+            'eeg_mean': eeg_mean[:, self.timesteps[0]:self.timesteps[1]],
+        }
+        return sample
+    
+    def __len__(self):
+        return self.trial_all_subjects
+    

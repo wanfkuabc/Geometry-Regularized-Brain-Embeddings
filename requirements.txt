@@ -1,0 +1,26 @@
+# Direct runtime dependencies for the MEG/EEG training code.
+# Versions are based on the provided BCI environment.  Transitive packages are
+# intentionally left to pip rather than freezing the whole conda environment.
+
+# PyTorch stack (torch 2.4.1 requires torchvision 0.19.1).
+torch==2.4.1
+torchvision==0.19.1
+pytorch-lightning==1.6.5
+torchmetrics==1.5.2
+tensorboard==2.11.2
+
+# Model and configuration
+open_clip_torch==2.32.0
+timm==1.0.22
+transformers==4.46.3
+omegaconf==2.1.1
+einops==0.8.1
+
+# Data processing and numerical utilities
+numpy==1.24.4
+scipy==1.10.1
+pandas==1.5.1
+pillow==10.4.0
+opencv-python>=4.10,<4.12
+tqdm==4.67.1
+PyYAML==6.0.2
